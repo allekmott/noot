@@ -14,11 +14,29 @@
 
 #include <unistd.h>
 
-#define NOOT_VERSION "0.0.2"
+#define NOOT_VERSION "0.0.3"
 
 void error(const char *msg)  {
 	fprintf(stderr, "An error occurred: %s\n", msg);
 	exit(1);
+}
+
+/* Checks if a socket is open */
+int socket_open(int socket_fd) {
+	int error = 0;
+	socklen_t len = sizeof(error);
+	
+	/* query socket stuff for error code */
+	int retval = getsockopt(socket_fd, 	SOL_SOCKET, SO_ERROR, &error, &len);
+
+	/* retval & error will be nonzero if an error has occurred,
+	 * denoting potential connection issue */
+	return (!retval && !error); 
+}
+
+/* Pull IP address from sockaddr_in struct */
+char *socket_ip(struct sockaddr_in *client_addr) {
+	return inet_ntoa(client_addr->sin_addr);
 }
 
 /* Send message over socket */
@@ -48,11 +66,16 @@ int send_msg(int socket_fd, char *buffer) {
 
 /* handling of new connection (where the nooting happens) */
 void process_connection(int socket_fd, struct sockaddr_in *client_addr) {
-	char *client_ip = inet_ntoa(client_addr->sin_addr); // extract client's ip
-	printf("Received connection from %s\n", client_ip);
+	/* extract client's ip */
+	char *client_ip = socket_ip(client_addr);
 	printf("Nooting @%s\n", client_ip);
 
 	while (1) {
+		/* check to see if socket still active */
+		if (!socket_open(socket_fd))
+			return;
+
+		/* if so, send noot, sleep for 1s */
 		if (send_msg(socket_fd, "noot\n") == -1)
 			error("could not noot");
 		sleep(1);
@@ -67,18 +90,19 @@ int init_net() {
 	printf("\nBegin network initialization...\n");
 	
 	printf("Opening socket\n");
-	if ((socket_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1) // stream socket, ip
+	/* stream socket, ip protocol */
+	if ((socket_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
 		error("failed to open socket");
 
 	printf("Making address reusable\n");
 	if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1)
 		error("failed to set reusable flag");
 
-	// set up host address info
-	host_addr.sin_family = AF_INET; // internet protocol formatted address
-	host_addr.sin_port = htons(17007); // input port = host to network string of 17007
+	/* set up host address info */
+	host_addr.sin_family = AF_INET; /* internet protocol formatted address */
+	host_addr.sin_port = htons(17007); /* input port = host to network string of 17007 */
 	host_addr.sin_addr.s_addr = 0;
-	memset(&host_addr.sin_zero, '\0', 8); // zero out zero
+	memset(&host_addr.sin_zero, '\0', 8); /* zero out zero */
 
 	printf("Binding to port %i\n", 17007);
 
@@ -96,9 +120,11 @@ int init_net() {
 
 /* Accept and process incoming connections */
 void serve(int socket_fd) {
-	int incoming_fd; // socket descriptor for new connection
-	struct sockaddr_in client_addr; // client's addressing shiz
-	socklen_t sin_size; // size of address struct
+	int con_count = 1;
+
+	int incoming_fd; /* socket descriptor for new connection */
+	struct sockaddr_in client_addr; /* client's addressing shiz */
+	socklen_t sin_size; /* size of address struct */
 	sin_size = sizeof(struct sockaddr_in);
 
 	printf("\nNewtorking initalized, awaiting connections...\n");
@@ -106,9 +132,20 @@ void serve(int socket_fd) {
 	/* loop endlessly, forking process upon new connection */
 	while (1) {
 		incoming_fd = accept(socket_fd, (struct sockaddr *) &client_addr, &sin_size);
+		int con = con_count++;
+
+		/* extract client ip */
+		char *client_ip = socket_ip(&client_addr);
+		printf("Received connection from %s (#%i)\n", client_ip, con);
+
 		int pid = fork();
-		if (!pid) { // new process
+		if (!pid) { // new process (pid = 0)
 			process_connection(incoming_fd, (struct sockaddr_in *) &client_addr);
+			printf("%s disconnected, killing forked process (connection %i)\n",
+				socket_ip(&client_addr), con);
+
+			close(incoming_fd);
+			exit(0);
 		}
 	}
 }
