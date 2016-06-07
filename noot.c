@@ -11,14 +11,32 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <signal.h>
+#include <errno.h>
 
 #include <unistd.h>
 
-#define NOOT_VERSION "0.0.3"
+#define NOOT_VERSION "0.0.3a"
 
 void error(const char *msg)  {
 	fprintf(stderr, "An error occurred: %s\n", msg);
 	exit(1);
+}
+
+/* Handler for SIGCHLD (to aid in termination of zombie processes) */
+void handle_sigchld(int sig) {
+	int saved_errno = errno;
+	while (waitpid((pid_t) (-1), 0, WNOHANG) > 0) {}
+	errno = saved_errno;
+}
+
+/* Register handler for SIGCHLD */
+void register_sigchld() {
+	struct sigaction sa;
+	sa.sa_handler = &handle_sigchld;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+	if (sigaction(SIGCHLD, &sa, 0) == -1)
+		error("Could not register SIGCHLD handler");
 }
 
 /* Checks if a socket is open */
@@ -139,19 +157,27 @@ void serve(int socket_fd) {
 		printf("Received connection from %s (#%i)\n", client_ip, con);
 
 		int pid = fork();
-		if (!pid) { // new process (pid = 0)
+		if (!pid) { /* new process (pid = 0) */
+
 			process_connection(incoming_fd, (struct sockaddr_in *) &client_addr);
-			printf("%s disconnected, killing forked process (connection %i)\n",
-				socket_ip(&client_addr), con);
+			/* ^ exits upon disconnection */
+
+			printf("%s (%i) disconnected, killing forked process (pid %i)\n",
+				socket_ip(&client_addr), con, getpid());
 
 			close(incoming_fd);
-			exit(0);
-		}
+			kill(getpid(), SIGTERM);
+		} else
+			printf("-> Connection %i interfacing with process %i\n", con, pid);
 	}
 }
 
 int main(int argc, char const *argv[]) {
 	printf("noot v%s\n", NOOT_VERSION);
+
+
+	/* register SIGCHLD handler (so as to not spread T virus) */
+	register_sigchld();
 
 	int socket_fd = init_net();
 	serve(socket_fd);
