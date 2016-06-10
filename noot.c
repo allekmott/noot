@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -15,7 +16,14 @@
 
 #include <unistd.h>
 
-#define NOOT_VERSION "0.0.3a"
+#define NOOT_VERSION "0.1.0"
+
+int delay_time = 1000000;
+
+void usage(const char *cmd) {
+	printf("Usage: %s [-d delay_time_s]\n", cmd);
+	exit(0);
+}
 
 void error(const char *msg)  {
 	fprintf(stderr, "An error occurred: %s\n", msg);
@@ -96,7 +104,7 @@ void process_connection(int socket_fd, struct sockaddr_in *client_addr) {
 		/* if so, send noot, sleep for 1s */
 		if (send_msg(socket_fd, "noot\n") == -1)
 			error("could not noot");
-		sleep(1);
+		usleep(delay_time);
 	}
 }
 
@@ -172,12 +180,42 @@ void serve(int socket_fd) {
 	}
 }
 
+void handle_args(int argc, const char *argv[]) {
+	int c;
+	extern int optind, optopt;
+
+	/* iterate through command line flags */
+	while ((c = getopt(argc, (char *const *) argv, "d:h")) != -1) {
+		switch(c) {
+			/* d flag -> set delay time in seconds */
+			case 'd':
+				delay_time = atof(optarg) * 1000000;
+				if (delay_time <= 0) {
+					printf("Invalid delay time: %.1fs\n", delay_time/1000000.0f);
+					exit(1);
+				}
+				break;
+
+			/* help/invalid flag -> usage */
+			case 'h':
+			case '?': usage(argv[0]); break;
+		}
+	}
+}
+
 int main(int argc, char const *argv[]) {
 	printf("noot v%s\n", NOOT_VERSION);
 
-
 	/* register SIGCHLD handler (so as to not spread T virus) */
 	register_sigchld();
+
+	/* grab delay time, if applicable, from command line args
+	 * (stored in global delay_time)
+	 */
+	handle_args(argc, argv);
+
+	/* print out delay time */
+	printf("\nDelay time set to %.1fs\n", delay_time/1000000.0f);
 
 	int socket_fd = init_net();
 	serve(socket_fd);
