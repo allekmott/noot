@@ -19,6 +19,7 @@
 #define NOOT_VERSION "0.1.0"
 
 int delay_time = 1000000;
+int max_connections = 500;
 
 void usage(const char *cmd) {
 	printf("Usage: %s [-d delay_time_s]\n", cmd);
@@ -102,7 +103,7 @@ void process_connection(int socket_fd, struct sockaddr_in *client_addr) {
 			return;
 
 		/* if so, send noot, sleep for 1s */
-		if (send_msg(socket_fd, "noot\n") == -1)
+		if (send_msg(socket_fd, "noot\r\n") == -1)
 			error("could not noot");
 		usleep(delay_time);
 	}
@@ -163,6 +164,15 @@ void serve(int socket_fd) {
 		/* extract client ip */
 		char *client_ip = socket_ip(&client_addr);
 		printf("Received connection from %s (#%i)\n", client_ip, con);
+
+		if (con_count > max_connections) {
+			con_count--;
+			printf("[max connections exceeded, notifying and dropping]\n");
+			send_msg(incoming_fd,
+				"noot too many connections, wait your turn noot\r\n");
+			close(incoming_fd);
+			continue;
+		}
 
 		int pid = fork();
 		if (!pid) { /* new process (pid = 0) */
