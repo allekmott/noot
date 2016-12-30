@@ -1,5 +1,5 @@
 CC=gcc
-CFLAGS=
+CFLAGS=-Wall
 
 EXE=noot
 
@@ -15,4 +15,3 @@ $(EXE): $(OBJ_DEPS)
 
 clean:
 	rm -f $(EXE) *.o  *~
-

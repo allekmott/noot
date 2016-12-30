@@ -15,8 +15,10 @@
 #include <errno.h>
 
 #include <unistd.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
-#define NOOT_VERSION "0.1.0"
+#define NOOT_VERSION "0.1.1"
 
 int delay_time = 1000000;
 int max_connections = 500;
@@ -31,10 +33,21 @@ void error(const char *msg)  {
 	exit(1);
 }
 
-/* Handler for SIGCHLD (to aid in termination of zombie processes) */
+/* Handler for SIGCHLD
+ * (this is where all connection handlers end)
+ */
 void handle_sigchld(int sig) {
+	/* preserve error state */
 	int saved_errno = errno;
-	while (waitpid((pid_t) (-1), 0, WNOHANG) > 0) {}
+
+	int status;
+	pid_t pid;
+
+	/* wait for process to terminate */
+	while ((pid = waitpid((pid_t) (-1), &status, WNOHANG)) > 0) {
+		/* printf("Process %d exited\n", pid); */
+	}
+
 	errno = saved_errno;
 }
 
@@ -52,13 +65,13 @@ void register_sigchld() {
 int socket_open(int socket_fd) {
 	int error = 0;
 	socklen_t len = sizeof(error);
-	
+
 	/* query socket stuff for error code */
 	int retval = getsockopt(socket_fd, 	SOL_SOCKET, SO_ERROR, &error, &len);
 
 	/* retval & error will be nonzero if an error has occurred,
 	 * denoting potential connection issue */
-	return (!retval && !error); 
+	return (!retval && !error);
 }
 
 /* Pull IP address from sockaddr_in struct */
@@ -68,10 +81,10 @@ char *socket_ip(struct sockaddr_in *client_addr) {
 
 /* Send message over socket */
 int send_msg(int socket_fd, char *buffer) {
-	int total_bytes_sent, bytes_sent, total_to_send, left_to_send;
+	int total_bytes_sent, bytes_sent, left_to_send;
 
 	/* calculate # of bytes to send from length of message */
-	total_to_send = left_to_send = strlen(buffer);
+	left_to_send = strlen(buffer);
 
 	/*printf("Sending %i bytes...\n", total_to_send);*/
 
@@ -83,7 +96,7 @@ int send_msg(int socket_fd, char *buffer) {
 		/* hopefully the message went through? */
 		if (bytes_sent == -1)
 			return -1;
-		
+
 		left_to_send -= bytes_sent;
 		buffer += bytes_sent;
 		/*printf("Sent %i/%i bytes\n", total_bytes_sent, total_to_send);*/
@@ -115,7 +128,7 @@ int init_net() {
 	struct sockaddr_in host_addr;
 	int yes = 1;
 	printf("\nBegin network initialization...\n");
-	
+
 	printf("Opening socket\n");
 	/* stream socket, ip protocol */
 	if ((socket_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
