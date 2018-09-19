@@ -18,192 +18,224 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 
-#define NOOT_VERSION "0.1.1"
+#define NOOT_VERSION "0.1.2"
 
-int delay_time = 1000000;
-int max_connections = 500;
+#define DEFAULT_PORT 17007
+#define DEFAULT_DELAY_TIME 1000000
+#define DEFAULT_CONNECTION_MAX 500
 
-void usage(const char *cmd) {
+static int connection_max = DEFAULT_CONNECTION_MAX;
+static int delay_time = DEFAULT_DELAY_TIME;
+
+static void usage(const char *cmd) {
 	printf("Usage: %s [-d delay_time_s]\n", cmd);
 	exit(0);
-}
-
-void error(const char *msg)  {
-	fprintf(stderr, "An error occurred: %s\n", msg);
-	exit(1);
 }
 
 /* Handler for SIGCHLD
  * (this is where all connection handlers end)
  */
-void handle_sigchld(int sig) {
+static void handle_sigchld(int sig) {
 	/* preserve error state */
-	int saved_errno = errno;
-
 	int status;
 	pid_t pid;
 
-	/* wait for process to terminate */
-	while ((pid = waitpid((pid_t) (-1), &status, WNOHANG)) > 0) {
-		/* printf("Process %d exited\n", pid); */
-	}
+	int initial_errno;
 
-	errno = saved_errno;
+	switch (sig) {
+		case SIGCHLD:
+			initial_errno = errno;
+			
+			/* wait for process to terminate */
+			while ((pid = waitpid((pid_t) (-1), &status, WNOHANG)) > 0) ;
+			
+			errno = initial_errno;
+		default: return;
+	}
 }
 
 /* Register handler for SIGCHLD */
-void register_sigchld() {
+static int register_sigchld() {
 	struct sigaction sa;
+	int res;
+
+	memset(&sa, 0x00, sizeof(struct sigaction));
 	sa.sa_handler = &handle_sigchld;
+
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
-	if (sigaction(SIGCHLD, &sa, 0) == -1)
-		error("Could not register SIGCHLD handler");
+
+	res = sigaction(SIGCHLD, &sa, 0);
+	if (res < 0) {
+		perror("Could not register SIGCHLD handler");
+		return res;
+	}
+
+	return 0;
 }
 
 /* Checks if a socket is open */
 int socket_open(int socket_fd) {
-	int error = 0;
-	socklen_t len = sizeof(error);
+	socklen_t len;
+	int error, res;
+
+	error = 0;
+	len = sizeof(res);
 
 	/* query socket stuff for error code */
-	int retval = getsockopt(socket_fd, 	SOL_SOCKET, SO_ERROR, &error, &len);
+	res = getsockopt(socket_fd, SOL_SOCKET, SO_ERROR, &error, &len);
 
 	/* retval & error will be nonzero if an error has occurred,
 	 * denoting potential connection issue */
-	return (!retval && !error);
+	return (!res && !error);
 }
 
 /* Pull IP address from sockaddr_in struct */
-char *socket_ip(struct sockaddr_in *client_addr) {
+static char *s_ip_address(const struct sockaddr_in *client_addr) {
 	return inet_ntoa(client_addr->sin_addr);
 }
 
 /* Send message over socket */
-int send_msg(int socket_fd, char *buffer) {
-	int total_bytes_sent, bytes_sent, left_to_send;
+static int send_message(int fd, const char *message) {
+	int to_send, total_sent, sent;
 
-	/* calculate # of bytes to send from length of message */
-	left_to_send = strlen(buffer);
-
-	/*printf("Sending %i bytes...\n", total_to_send);*/
+	to_send = strlen(message) + 1;
+	total_sent = 0;
 
 	/* while there's still more to send, send it */
-	while (left_to_send > 0) {
-		bytes_sent = send(socket_fd, buffer, left_to_send, 0);
-		total_bytes_sent += bytes_sent;
+	while (total_sent < to_send) {
+		sent = send(fd, message, to_send - total_sent, 0);
 
 		/* hopefully the message went through? */
-		if (bytes_sent == -1)
-			return -1;
+		if (sent == -1) {
+			return -(errno);
+		}
 
-		left_to_send -= bytes_sent;
-		buffer += bytes_sent;
-		/*printf("Sent %i/%i bytes\n", total_bytes_sent, total_to_send);*/
+		total_sent += sent;
+		message += sent;
 	}
-	return bytes_sent;
+
+	return total_sent;
 }
 
 /* handling of new connection (where the nooting happens) */
-void process_connection(int socket_fd, struct sockaddr_in *client_addr) {
-	/* extract client's ip */
-	char *client_ip = socket_ip(client_addr);
+void handle_connection(int socket_fd, const struct sockaddr_in *client_addr) {
+	char *client_ip;
+	int res;
+
+	client_ip = s_ip_address(client_addr);
 	printf("Nooting @%s\n", client_ip);
 
 	while (1) {
-		/* check to see if socket still active */
-		if (!socket_open(socket_fd))
+		if (!socket_open(socket_fd)) {
 			return;
+		}
+		
+		res = send_message(socket_fd, "noot\r\n");
+		if (res < 0) {
+			perror("could not noot");
+			return;
+		}
 
-		/* if so, send noot, sleep for 1s */
-		if (send_msg(socket_fd, "noot\r\n") == -1)
-			error("could not noot");
 		usleep(delay_time);
 	}
 }
 
 /* Housekeeping, initial network connection */
 int init_net() {
-	int socket_fd;
-	struct sockaddr_in host_addr;
-	int yes = 1;
+	int fd;
+	struct sockaddr_in addr;
+
+	int y;
+
+	y = 1;
 	printf("\nBegin network initialization...\n");
 
 	printf("Opening socket\n");
 	/* stream socket, ip protocol */
-	if ((socket_fd = socket(PF_INET, SOCK_STREAM, 0)) == -1)
-		error("failed to open socket");
+	if ((fd = socket(PF_INET, SOCK_STREAM, 0)) < 0) {
+		perror("failed to open socket");
+		return -(errno);
+	}
 
-	printf("Making address reusable\n");
-	if (setsockopt(socket_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1)
-		error("failed to set reusable flag");
+	printf("Configuring address\n");
+	if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &y, sizeof(int)) < 0) {
+		perror("failed to set reusable address configurations");
+		return -(errno);
+	}
 
-	/* set up host address info */
-	host_addr.sin_family = AF_INET; /* internet protocol formatted address */
-	host_addr.sin_port = htons(17007); /* input port = host to network string of 17007 */
-	host_addr.sin_addr.s_addr = 0;
-	memset(&host_addr.sin_zero, '\0', 8); /* zero out zero */
+	memset(&addr, 0x00, sizeof(struct sockaddr_in));
+	addr.sin_family = AF_INET; /* internet protocol formatted address */
+	addr.sin_port = htons(DEFAULT_PORT); /* input port (network byte order) */
 
-	printf("Binding to port %i\n", 17007);
+	printf("Binding to port %i\n", DEFAULT_PORT);
 
-	// bind to port
-	if (bind(socket_fd, (struct sockaddr *) &host_addr, sizeof(struct sockaddr)) == -1)
-		error("failed to bind to port");
+	/* bind to port */
+	if (bind(fd, (struct sockaddr *) &addr, sizeof(struct sockaddr)) == -1) {
+		perror("failed to bind to port");
+		return -(errno);
+	}
 
 	printf("Attempting to listen on port\n");
-	if (listen(socket_fd, 5) == -1) // attempt to listen
-		error("could not listen on port");
+	if (listen(fd, 5) == -1) {
+		perror("could not listen on port");
+		return -(errno);
+	}
 
-	printf("Listen successful\n");
-	return socket_fd;
+	printf("Listening on port %i\n", DEFAULT_PORT);
+	return fd;
 }
 
 /* Accept and process incoming connections */
-void serve(int socket_fd) {
-	int con_count = 1;
+void serve(int server_fd) {
+	int client_fd;
+	char *client_ip;
+	struct sockaddr_in client_addr;
+	socklen_t client_addr_size;
 
-	int incoming_fd; /* socket descriptor for new connection */
-	struct sockaddr_in client_addr; /* client's addressing shiz */
-	socklen_t sin_size; /* size of address struct */
-	sin_size = sizeof(struct sockaddr_in);
+	int n_connections, n_connection;
+
+	n_connections = 0;
+	client_addr_size = sizeof(struct sockaddr_in);
 
 	printf("\nNewtorking initalized, awaiting connections...\n");
 
 	/* loop endlessly, forking process upon new connection */
 	while (1) {
-		incoming_fd = accept(socket_fd, (struct sockaddr *) &client_addr, &sin_size);
-		int con = con_count++;
+		client_fd = accept(server_fd,
+				(struct sockaddr *) &client_addr, &client_addr_size);
 
-		/* extract client ip */
-		char *client_ip = socket_ip(&client_addr);
-		printf("Received connection from %s (#%i)\n", client_ip, con);
-
-		if (con_count > max_connections) {
-			con_count--;
+		if (n_connections == connection_max) {
 			printf("[max connections exceeded, notifying and dropping]\n");
-			send_msg(incoming_fd,
+			send_message(client_fd,
 				"noot too many connections, wait your turn noot\r\n");
-			close(incoming_fd);
+			close(client_fd);
 			continue;
 		}
+
+		n_connection = ++n_connections;
+
+		client_ip = s_ip_address(&client_addr);
+		printf("Received connection from %s (#%i)\n", client_ip, n_connection);
 
 		int pid = fork();
 		if (!pid) { /* new process (pid = 0) */
 
-			process_connection(incoming_fd, (struct sockaddr_in *) &client_addr);
+			handle_connection(client_fd, (struct sockaddr_in *) &client_addr);
 			/* ^ exits upon disconnection */
 
 			printf("%s (%i) disconnected, killing forked process (pid %i)\n",
-				socket_ip(&client_addr), con, getpid());
+				s_ip_address(&client_addr), n_connection, getpid());
 
-			close(incoming_fd);
+			close(client_fd);
 			kill(getpid(), SIGTERM);
 		} else
-			printf("-> Connection %i interfacing with process %i\n", con, pid);
+			printf("-> Connection %i to be handled by process %i\n",
+					n_connection, pid);
 	}
 }
 
-void handle_args(int argc, const char *argv[]) {
+void parse_args(int argc, const char *argv[]) {
 	int c;
 	extern int optind, optopt;
 
@@ -227,6 +259,8 @@ void handle_args(int argc, const char *argv[]) {
 }
 
 int main(int argc, char const *argv[]) {
+	int server_fd;
+
 	printf("noot v%s\n", NOOT_VERSION);
 
 	/* register SIGCHLD handler (so as to not spread T virus) */
@@ -235,13 +269,13 @@ int main(int argc, char const *argv[]) {
 	/* grab delay time, if applicable, from command line args
 	 * (stored in global delay_time)
 	 */
-	handle_args(argc, argv);
+	parse_args(argc, argv);
 
 	/* print out delay time */
 	printf("\nDelay time set to %.1fs\n", delay_time/1000000.0f);
 
-	int socket_fd = init_net();
-	serve(socket_fd);
+	server_fd = init_net();
+	serve(server_fd);
 
 	return 0;
 }
