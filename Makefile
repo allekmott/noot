@@ -3,9 +3,9 @@ CFLAGS=-Wall -Wextra -std=c89
 
 EXE=noot
 
-DEPS=
+DEPS=util.h
 
-OBJ_DEPS=noot.o
+OBJ_DEPS=util.o noot.o
 
 %.o: $.c $(DEPS)
 	$(CC) -c -o $@ $< $(CFLAGS)
@@ -14,4 +14,6 @@ $(EXE): $(OBJ_DEPS)
 	$(CC) -o $@ $^ $(CFLAGS)
 
 clean:
-	rm -f $(EXE) *.o  *~
+	rm -f noot
+	rm -f *.o
+
